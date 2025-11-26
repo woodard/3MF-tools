@@ -4,6 +4,11 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 import sys
 import os
+import urllib.request
+import urllib.parse
+import json
+import time
+import re
 
 def local_name(tag):
     """
@@ -39,7 +44,7 @@ def find_all_children_by_name(element, name):
 
 def get_metadata_value(element, key_name):
     """
-    Helper to find <metadata key="...">value</metadata> 
+    Helper to find <metadata key="...">value</metadata>
     or <metadata key="..." value="..."/>
     """
     for meta in element.iter():
@@ -64,7 +69,7 @@ def extract_names_from_config(zf):
         if p in zf.namelist():
             config_path = p
             break
-            
+
     if not config_path:
         return {}
 
@@ -75,7 +80,7 @@ def extract_names_from_config(zf):
             tree = ET.parse(f)
             root = tree.getroot()
             config = find_child_by_name(root, 'config')
-            
+
             # If config element isn't found (e.g. root IS config), fallback to root
             search_root = config if config is not None else root
 
@@ -85,17 +90,13 @@ def extract_names_from_config(zf):
                     obj_id = obj.get('id')
                     if not obj_id:
                         continue
-                    
+
                     # Find all 'part' children of this object
                     parts = []
                     for child in obj:
                         if local_name(child.tag) == 'part':
                             parts.append(child)
-                    
-                    # Logging requested by user: Print ID, Name, and Part Count
-                    obj_name_log = get_metadata_value(obj, 'name')
-                    # We print the raw name in debug log, but clean it for the map
-                    
+
                     names_for_this_object = []
 
                     # Logic: If 1 or 0 parts, use Object Metadata. If >1 parts, use Part Metadata.
@@ -119,8 +120,34 @@ def extract_names_from_config(zf):
 
     except Exception as e:
         print(f"Warning: Found {config_path} but failed to parse it: {e}")
-        
+
     return id_to_names
+
+def search_thangs(query):
+    """
+    Generates a direct search link for Thangs.com using the frontend URL format.
+    Example: https://thangs.com/search/"query"?searchScope=thangs&view=list
+    Skips generation if query matches specific patterns.
+    """
+    if not query:
+        return []
+
+    # Skip URL generation for stacking tiles (likely utility parts)
+    if re.search(r"Tile.* Stack", query):
+        return []
+
+    # 1. Enclose the query in double quotes as requested
+    quoted_query = f'"{query}"'
+
+    # 2. URL Encode the query (spaces -> %20, quotes -> %22)
+    # quote() uses %20 for spaces, which matches the user's requirement better than quote_plus()
+    encoded_query = urllib.parse.quote(quoted_query)
+
+    # 3. Construct the URL
+    url = f"https://thangs.com/search/{encoded_query}?searchScope=thangs&view=list"
+
+    # Return as a list to maintain compatibility with the BOM printing loop
+    return [url]
 
 def parse_3mf_for_bom(filepath: str):
     """
@@ -130,10 +157,12 @@ def parse_3mf_for_bom(filepath: str):
         print(f"Error: File not found at '{filepath}'")
         return
 
+    print(f"--- Analyzing 3MF File: {os.path.basename(filepath)} ---")
+
     try:
         with zipfile.ZipFile(filepath, 'r') as zf:
             model_xml_content = None
-            
+
             # Check for the two common paths as 3MF is case-sensitive
             try:
                 model_xml_content = zf.read('3D/3dmodel.model')
@@ -142,7 +171,7 @@ def parse_3mf_for_bom(filepath: str):
                     model_xml_content = zf.read('3d/3dmodel.model')
                 except KeyError:
                     raise KeyError("The 3MF archive is missing the required '3D/3dmodel.model' or '3d/3dmodel.model' file.")
-            
+
             # Pre-load metadata names. Returns Dict[ID -> List[Names]]
             metadata_names_map = extract_names_from_config(zf)
 
@@ -171,7 +200,7 @@ def parse_3mf_for_bom(filepath: str):
 
     # Extract build items
     build = find_child_by_name(root, 'build')
-    
+
     final_bom_list = []
 
     if build is not None:
@@ -182,11 +211,11 @@ def parse_3mf_for_bom(filepath: str):
                 # This might return a LIST of names if the object has multiple parts
                 if object_id in metadata_names_map:
                     final_bom_list.extend(metadata_names_map[object_id])
-                
+
                 # 2. Try Standard 3MF Resources
                 elif object_id in resource_names_fallback and resource_names_fallback[object_id]:
                     final_bom_list.append(resource_names_fallback[object_id])
-                
+
                 # 3. Fallback
                 else:
                     final_bom_list.append(f"Unnamed Object (ID: {object_id})")
@@ -198,27 +227,36 @@ def parse_3mf_for_bom(filepath: str):
     bom = Counter(final_bom_list)
 
     print("\nBill of Materials (BOM):")
-    
+
     if not bom:
         print("No parts were found in the model's build section.")
         return
 
     print("-" * 35)
-    print(f"{'Quantity':<10} | {'Part Name':<25}")
-    print("-" * 35)
-    
-    # Sort by Name
-    sorted_bom_items = sorted(bom.items(), key=lambda x: x[0])
+    print(f"{'Quantity':<10} | {'Part Name':<40} | {'Thangs URL'}")
+    print("-" * 100)
+
+    # Sort by Name (Case-insensitive)
+    sorted_bom_items = sorted(bom.items(), key=lambda x: x[0].lower())
 
     for name, count in sorted_bom_items:
-        print(f"{count:<10} | {name:<25}")
-        
-    print("-" * 35)
+        # Generate Thangs search URL
+        thangs_urls = search_thangs(name)
+
+        # Format output
+        output_line = f"{count:<10} | {name:<40}"
+        if thangs_urls:
+            urls_str = ", ".join(thangs_urls)
+            output_line += f" | {urls_str}"
+
+        print(output_line)
+
+    print("-" * 100)
 
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("Usage: 3mf_bom_parser.py <path_to_3mf_file>")
+        print("Usage: python3 3mf_bom_parser.py <path_to_3mf_file>")
         sys.exit(1)
 
     input_file = sys.argv[1]
