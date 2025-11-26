@@ -9,6 +9,7 @@ import urllib.parse
 import json
 import time
 import re
+import argparse
 
 def local_name(tag):
     """
@@ -149,7 +150,7 @@ def search_thangs(query):
     # Return as a list to maintain compatibility with the BOM printing loop
     return [url]
 
-def parse_3mf_for_bom(filepath: str):
+def parse_3mf_for_bom(filepath: str, show_urls: bool = False):
     """
     Reads a 3MF file, parses the internal 3D model XML, and prints a Bill of Materials (BOM).
     """
@@ -232,32 +233,37 @@ def parse_3mf_for_bom(filepath: str):
         print("No parts were found in the model's build section.")
         return
 
-    print("-" * 35)
-    print(f"{'Quantity':<10} | {'Part Name':<40} | {'Thangs URL'}")
-    print("-" * 100)
+    # Adjust table header based on URL visibility
+    print("-" * (100 if show_urls else 55))
+    if show_urls:
+        print(f"{'Quantity':<10} | {'Part Name':<40} | {'Thangs URL'}")
+    else:
+        print(f"{'Quantity':<10} | {'Part Name':<40}")
+    print("-" * (100 if show_urls else 55))
 
     # Sort by Name (Case-insensitive)
     sorted_bom_items = sorted(bom.items(), key=lambda x: x[0].lower())
 
     for name, count in sorted_bom_items:
-        # Generate Thangs search URL
-        thangs_urls = search_thangs(name)
-
-        # Format output
         output_line = f"{count:<10} | {name:<40}"
-        if thangs_urls:
-            urls_str = ", ".join(thangs_urls)
-            output_line += f" | {urls_str}"
+
+        if show_urls:
+            # Generate Thangs search URL only if flag is enabled
+            thangs_urls = search_thangs(name)
+            if thangs_urls:
+                urls_str = ", ".join(thangs_urls)
+                output_line += f" | {urls_str}"
 
         print(output_line)
 
-    print("-" * 100)
+    print("-" * (100 if show_urls else 55))
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: python3 3mf_bom_parser.py <path_to_3mf_file>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Parse a 3MF file to generate a Bill of Materials.")
+    parser.add_argument("filepath", help="Path to the .3mf file")
+    parser.add_argument("--multiboard", action="store_true", help="Include Thangs.com search URLs in the output")
 
-    input_file = sys.argv[1]
-    parse_3mf_for_bom(input_file)
+    args = parser.parse_args()
+
+    parse_3mf_for_bom(args.filepath, show_urls=args.multiboard)
